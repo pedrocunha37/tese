@@ -1,0 +1,104 @@
+name: Build and Publish LaTeX document
+on:
+  push:
+    # Sequence of patterns matched against refs/tags
+    tags:
+      - 'v*' # Push events to matching v*
+  workflow_dispatch:
+
+jobs:
+  build_latex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: LaTeX compilation
+        uses: xu-cheng/latex-action@v2
+        with:
+          # The root LaTeX file to be compiled
+          #working_directory: .
+          root_file: main.tex
+      - name: Get current time
+        uses: 1466587594/get-current-time@v2
+        id: current-time
+
+      - uses: robinraju/release-downloader@v1.6
+        with: 
+          latest: true
+          fileName: "main.pdf"
+          tarBall: false
+          zipBall: false
+          out-file-path: "previous"
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@master
+        with:
+          name: main
+          path: './main.pdf'
+
+  build_diff:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.previoustag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: 'Get Previous tag'
+        id: previoustag
+        run: |
+          export PREV_TAG
+          PREV_TAG="$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1))"
+          echo "tag=${PREV_TAG}" >> $GITHUB_OUTPUT
+      - name: Generate Difference PDF
+        uses:  Arthur1/latex-diff-action@v2
+        with:
+          root_file: main.tex
+          compile_diff: true
+          compile_diff_target: ${{ steps.previoustag.outputs.tag }}
+      - uses: actions/upload-artifact@master
+        with:
+          name: diff
+          path: './diff.pdf'
+
+  create_release:
+    needs: [build_latex, build_diff]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v3
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: always()
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          generate_release_notes: true
+          files: |
+            main/main.pdf
+            diff/diff.pdf
+      - name: Generate dummy page
+        run: |
+          mkdir public
+          cp main/main.pdf public/main.pdf
+          cat > public/index.html <<EOL
+          <!doctype html>
+          <html height="100%">
+            <head>
+              <title>Dissertation</title>
+            </head>
+            <body height="100%">
+              <p>Compiled on: ${{ steps.current-time.outputs.readableTime }} </p>
+              <iframe src="main.pdf" width="100%" height="1000px"> </iframe>
+            </body>
+          </html>
+          EOL
+      - name: Deploy to GitHub Pages
+        if: success()
+        uses: crazy-max/ghaction-github-pages@v2
+        with:
+          target_branch: gh-pages
+          build_dir: public
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
